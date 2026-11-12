@@ -40,22 +40,25 @@ async function pickModels(): Promise<string[]> {
   } catch (e) { await log("models_error", { e: String(e) }); return ["gemini-flash-latest"]; }
 }
 async function gemini(prompt: string): Promise<any> {
-  let list = goodModel ? [goodModel] : await pickModels();
-  for (let k = 0; k < list.length && k < 5; k++) {
-    const m = list[k];
-        const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 15000);
-    let r: Response;
-    try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { signal: ctl.signal,
-      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }) });
-    } catch (e) { clearTimeout(tm); await log("gemini_error", { model: m, err: "timeout" });
-      if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); } continue; }
-    clearTimeout(tm);
-    const j = await r.json();
-    if (r.ok) { goodModel = m; const t = j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") || "{}"; try { return JSON.parse(t); } catch { return JSON.parse(t.replace(/^```json|```$/g, "")); } }
-    await log("gemini_error", { model: m, status: r.status, err: j?.error?.message });
-    if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); }
+  for (let round = 0; round < 2; round++) {
+    if (round) { await log("gemini_retry", { round }); await new Promise((r) => setTimeout(r, 20000)); }
+    let list = goodModel ? [goodModel] : await pickModels();
+    for (let k = 0; k < list.length && k < 4; k++) {
+      const m = list[k];
+      const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 12000);
+      let r: Response;
+      try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { signal: ctl.signal,
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }) });
+      } catch (e) { clearTimeout(tm); await log("gemini_error", { model: m, err: "timeout" });
+        if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); } continue; }
+      clearTimeout(tm);
+      const j = await r.json();
+      if (r.ok) { goodModel = m; const t = j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") || "{}"; try { return JSON.parse(t); } catch { return JSON.parse(t.replace(/^```json|```$/g, "")); } }
+      await log("gemini_error", { model: m, status: r.status, err: j?.error?.message });
+      if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); }
+    }
   }
   return null;
 }
