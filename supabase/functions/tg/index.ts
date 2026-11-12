@@ -40,19 +40,22 @@ async function pickModels(): Promise<string[]> {
   } catch (e) { await log("models_error", { e: String(e) }); return ["gemini-flash-latest"]; }
 }
 async function gemini(prompt: string): Promise<any> {
-  const list = goodModel ? [goodModel] : await pickModels();
-  for (const m of list) {
-    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 15000);
+  let list = goodModel ? [goodModel] : await pickModels();
+  for (let k = 0; k < list.length && k < 5; k++) {
+    const m = list[k];
+        const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 15000);
     let r: Response;
     try { r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { signal: ctl.signal,
       method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI },
       body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }) });
-    } catch (e) { clearTimeout(tm); await log("gemini_error", { model: m, err: "timeout" }); continue; }
+    } catch (e) { clearTimeout(tm); await log("gemini_error", { model: m, err: "timeout" });
+      if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); } continue; }
     clearTimeout(tm);
     const j = await r.json();
     if (r.ok) { goodModel = m; const t = j?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") || "{}"; try { return JSON.parse(t); } catch { return JSON.parse(t.replace(/^```json|```$/g, "")); } }
     await log("gemini_error", { model: m, status: r.status, err: j?.error?.message });
+    if (m === goodModel) { goodModel = ""; list = list.concat((await pickModels()).filter((x) => x !== m)); }
   }
   return null;
 }
@@ -116,7 +119,9 @@ ${list}
 }
 
 async function onCallback(cq: any) {
-  const [act, id] = String(cq.data ?? "").split(":");
+  const [act, id, n] = String(cq.data ?? "").split(":");
+  if (act === "v") return await onChoose(cq, id, parseInt(n));
+  if (act === "t") return await onTaskDone(cq, id);
   const who = [cq.from?.first_name, cq.from?.last_name].filter(Boolean).join(" ");
   const { data: ev } = await db.from("events").select("*").eq("id", id).maybeSingle();
   if (!ev || ev.status !== "asked") { await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Уже учтено" }); return; }
@@ -144,7 +149,82 @@ async function onCallback(cq: any) {
       text: `${head} «${esc(c.title)}»\n\nПрогноз сдачи: <b>${fmt(r.forecast)}</b> — ${status}` +
         (r.penalty > 0 ? `\nВозможная неустойка: <b>≈ ${money(r.penalty)}</b>` : "") +
         `\nБыло: ${before ? fmt(before.forecast_date) : "—"}\nПричина: ${esc(ev.summary ?? "")} (${esc(w.title)}, +${days(ev.delay_days)})\n\n<a href="${PANEL}${c.view_key}">Открыть панель</a>` });
+    if (late) await offerOptions(c, ev, r);
   }
+}
+
+function statusText(r: any) { return r.slack < 0 ? `опоздание ${days(-r.slack)}` : (r.slack == 0 ? "впритык" : `в срок, запас ${days(r.slack)}`); }
+
+async function offerOptions(c: any, ev: any, r: any) {
+  const { data: works } = await db.from("works").select("*").eq("contract_id", c.id).order("sort");
+  const { data: deps } = await db.from("deps").select("pred_id,succ_id").eq("contract_id", c.id);
+  const { data: people } = await db.from("people").select("name,role").eq("contract_id", c.id).eq("is_boss", false);
+  const today = c.demo_today ?? new Date().toISOString().slice(0, 10);
+  const byId: any = {}; (works ?? []).forEach((w: any) => byId[w.id] = w);
+  const crit = new Set<string>(); const stack = (works ?? []).filter((w: any) => w.calc_end === r.forecast);
+  while (stack.length) { const w = stack.pop(); if (crit.has(w.code)) continue; crit.add(w.code);
+    (deps ?? []).filter((d: any) => d.succ_id === w.id).map((d: any) => byId[d.pred_id]).filter((p: any) => p && p.calc_end === w.calc_start).forEach((p: any) => stack.push(p)); }
+  const open = (works ?? []).filter((w: any) => crit.has(w.code) && w.calc_end > today);
+  const list = (works ?? []).filter((w: any) => w.calc_end > today).map((w: any) => `${w.code}: ${w.title}, ${w.calc_start} — ${w.calc_end}, ${w.duration + w.extra_days} дн.${crit.has(w.code) ? " [критический путь]" : ""}`).join("\n");
+  const ppl = (people ?? []).map((p: any) => `${p.name} — ${p.role}`).join("; ");
+  const prompt = `Ты — опытный диспетчер дорожного строительства. Контракт «${c.title}», сумма ${c.amount} ₸. Сегодня ${today}.
+Срок по договору ${c.deadline}, прогноз сдачи ${r.forecast}: опоздание ${-r.slack} дн., неустойка ≈ ${Math.round(r.penalty)} ₸.
+Причина последнего сдвига: ${ev.summary}.
+Незавершённые работы:
+${list}
+Люди: ${ppl}.
+Предложи 4 разных практичных варианта вернуть срок. Каждый вариант сокращает длительность ОДНОЙ работы, лучше с критического пути (вторая смена, доп. бригада, аренда техники, другой поставщик и т.п.).
+Ответь строго JSON: {"options":[{"title":"суть, до 55 знаков","work_code":"код","minus_days":целое 1-3,"cost":оценка затрат в тенге целым числом,"person":"имя из списка людей","task":"конкретное поручение этому человеку, до 110 знаков","due":"срок поручения, коротко, например «до завтра 12:00»"}]}`;
+  const a = await gemini(prompt);
+  await log("options_ai", a);
+  let opts: any[] = (a?.options ?? []).filter((o: any) => byId && (works ?? []).some((w: any) => w.code === o.work_code) && o.minus_days > 0);
+  if (!opts.length) opts = open.slice(-3).map((w: any) => ({ title: `Вторая смена: ${w.title}`, work_code: w.code, minus_days: 2, cost: 600000, person: "Сергей", task: `Организовать вторую смену на работе «${w.title}»`, due: "до завтра 12:00" }));
+  const checked: any[] = [];
+  for (const o of opts) { const { data: wi } = await db.rpc("whatif", { p_contract: c.id, p_code: o.work_code, p_minus: o.minus_days }); if (wi && wi.forecast < r.forecast) checked.push({ ...o, res: wi }); }
+  checked.sort((x, y) => y.res.slack - x.res.slack || (x.cost ?? 0) - (y.cost ?? 0));
+  const best = checked.slice(0, 3);
+  if (!best.length) { await tg("sendMessage", { chat_id: c.boss_tg_id, text: "🧭 Пульс проверил варианты на графике: ни один в одиночку не возвращает срок. Нужен разбор с командой." }); return; }
+  const { data: dec } = await db.from("decisions").insert({ contract_id: c.id, event_id: ev.id, options: best }).select().single();
+  const lines = best.map((o, i) => `<b>${i + 1}. ${esc(o.title)}</b>\nСдача: <b>${fmt(o.res.forecast)}</b> — ${statusText(o.res)}\nЗатраты ≈ ${money(o.cost ?? 0)} · отвечает ${esc(o.person ?? "")}`).join("\n\n");
+  await tg("sendMessage", { chat_id: c.boss_tg_id, parse_mode: "HTML",
+    text: `🧭 <b>Как спасти срок</b>\nПульс проверил варианты на графике:\n\n${lines}\n\nРешаете вы. Выберите:`,
+    reply_markup: { inline_keyboard: best.map((o, i) => [{ text: `${i + 1}. ${o.title}`.slice(0, 60), callback_data: `v:${dec.id}:${i}` }]).concat([[{ text: "Пока ничего не делать", callback_data: `v:${dec.id}:-1` }]]) } });
+}
+
+async function onChoose(cq: any, decId: string, i: number) {
+  const { data: d } = await db.from("decisions").select("*").eq("id", decId).maybeSingle();
+  if (!d || d.chosen !== null) { await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Решение уже принято" }); return; }
+  await tg("editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
+  await db.from("decisions").update({ chosen: i, decided_at: new Date().toISOString() }).eq("id", decId);
+  if (i < 0) { await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Хорошо" }); await tg("sendMessage", { chat_id: cq.message.chat.id, text: "Понял, пока ничего не меняем. Прогноз остаётся прежним." }); return; }
+  const o = d.options[i];
+  const { data: c } = await db.from("contracts").select("*").eq("id", d.contract_id).single();
+  const { data: w } = await db.from("works").select("*").eq("contract_id", c.id).eq("code", o.work_code).single();
+  await db.from("works").update({ extra_days: (w.extra_days ?? 0) - o.minus_days }).eq("id", w.id);
+  const { data: r } = await db.rpc("recalc", { p_contract: c.id, p_reason: `Решение: ${o.title}` });
+  const { data: p } = await db.from("people").select("*").eq("contract_id", c.id).eq("name", o.person).maybeSingle();
+  const { data: t } = await db.from("tasks").insert({ contract_id: c.id, decision_id: d.id, person_id: p?.id ?? null, text: o.task, due_text: o.due, status: "open", tg_chat_id: c.tg_group_id }).select().single();
+  await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Принято" });
+  if (c.tg_group_id) {
+    const q = await tg("sendMessage", { chat_id: c.tg_group_id, parse_mode: "HTML",
+      text: `📌 <b>Поручение руководителя</b>\n<b>${esc(o.person ?? "")}</b>: ${esc(o.task)}\nСрок: ${esc(o.due ?? "")}\nЦель: сдача ${fmt(r.forecast)} — ${statusText(r)}`,
+      reply_markup: { inline_keyboard: [[{ text: "✅ Сделано", callback_data: `t:${t.id}` }]] } });
+    if (q?.result?.message_id) await db.from("tasks").update({ tg_msg_id: q.result.message_id }).eq("id", t.id);
+  }
+  await tg("sendMessage", { chat_id: cq.message.chat.id, parse_mode: "HTML",
+    text: `✓ Выбран вариант ${i + 1}: ${esc(o.title)}\nНовый прогноз сдачи: <b>${fmt(r.forecast)}</b> — ${statusText(r)}\nПоручение отправлено в рабочую группу: ${esc(o.person ?? "")}.` });
+}
+
+async function onTaskDone(cq: any, id: string) {
+  const { data: t } = await db.from("tasks").select("*").eq("id", id).maybeSingle();
+  if (!t || t.status === "done") { await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Уже отмечено" }); return; }
+  const who = [cq.from?.first_name, cq.from?.last_name].filter(Boolean).join(" ");
+  await db.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", id);
+  await tg("editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
+  await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Отлично" });
+  await tg("sendMessage", { chat_id: cq.message.chat.id, text: `✅ ${who}: поручение выполнено — ${t.text}` });
+  const { data: c } = await db.from("contracts").select("*").eq("id", t.contract_id).single();
+  if (c.boss_tg_id) await tg("sendMessage", { chat_id: c.boss_tg_id, text: `✅ Поручение выполнено (${who}): ${t.text}` });
 }
 
 async function onPrivate(m: any) {

@@ -1,0 +1,2 @@
+-- whatif: примерка варианта ускорения без записи в график (этап 4)
+-- см. миграции stage4_whatif_tasks и whatif_no_temp_table в проекте Supabase
