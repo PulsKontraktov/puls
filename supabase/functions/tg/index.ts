@@ -174,11 +174,11 @@ async function offerOptions(c: any, ev: any, r: any) {
 ${list}
 Люди: ${ppl}.
 Предложи 4 разных практичных варианта вернуть срок. Каждый вариант сокращает длительность ОДНОЙ работы, лучше с критического пути (вторая смена, доп. бригада, аренда техники, другой поставщик и т.п.).
-Ответь строго JSON: {"options":[{"title":"суть, до 55 знаков","work_code":"код","minus_days":целое 1-3,"cost":оценка затрат в тенге целым числом,"person":"имя из списка людей","task":"конкретное поручение этому человеку, до 110 знаков","due":"срок поручения, коротко, например «до завтра 12:00»"}]}`;
+Ответь строго JSON: {"options":[{"title":"суть, до 55 знаков","work_code":"код","minus_days":целое 1-3,"cost":оценка затрат в тенге целым числом,"person":"имя из списка людей","task":"конкретное поручение этому человеку, до 110 знаков","due":"срок поручения, коротко, например «до завтра 12:00»","due_hours":через сколько часов срок поручения, целое}]}`;
   const a = await gemini(prompt);
   await log("options_ai", a);
   let opts: any[] = (a?.options ?? []).filter((o: any) => byId && (works ?? []).some((w: any) => w.code === o.work_code) && o.minus_days > 0);
-  if (!opts.length) opts = open.slice(-3).map((w: any) => ({ title: `Вторая смена: ${w.title}`, work_code: w.code, minus_days: 2, cost: 600000, person: "Сергей", task: `Организовать вторую смену на работе «${w.title}»`, due: "до завтра 12:00" }));
+  if (!opts.length) opts = open.slice(-3).map((w: any) => ({ title: `Вторая смена: ${w.title}`, work_code: w.code, minus_days: 2, cost: 600000, person: "Сергей", task: `Организовать вторую смену на работе «${w.title}»`, due: "до завтра 12:00", due_hours: 18 }));
   const checked: any[] = [];
   for (const o of opts) { const { data: wi } = await db.rpc("whatif", { p_contract: c.id, p_code: o.work_code, p_minus: o.minus_days }); if (wi && wi.forecast < r.forecast) checked.push({ ...o, res: wi }); }
   checked.sort((x, y) => y.res.slack - x.res.slack || (x.cost ?? 0) - (y.cost ?? 0));
@@ -203,7 +203,9 @@ async function onChoose(cq: any, decId: string, i: number) {
   await db.from("works").update({ extra_days: (w.extra_days ?? 0) - o.minus_days }).eq("id", w.id);
   const { data: r } = await db.rpc("recalc", { p_contract: c.id, p_reason: `Решение: ${o.title}` });
   const { data: p } = await db.from("people").select("*").eq("contract_id", c.id).eq("name", o.person).maybeSingle();
-  const { data: t } = await db.from("tasks").insert({ contract_id: c.id, decision_id: d.id, person_id: p?.id ?? null, text: o.task, due_text: o.due, status: "open", tg_chat_id: c.tg_group_id }).select().single();
+  const dueAt = new Date(Date.now() + (c.demo_due_minutes ? c.demo_due_minutes * 60000 : (o.due_hours ?? 18) * 3600000));
+  if (c.demo_due_minutes) o.due = "до " + dueAt.toLocaleTimeString("ru-RU", { timeZone: "Asia/Almaty", hour: "2-digit", minute: "2-digit" });
+  const { data: t } = await db.from("tasks").insert({ contract_id: c.id, decision_id: d.id, person_id: p?.id ?? null, text: o.task, due_text: o.due, due_at: dueAt.toISOString(), status: "open", tg_chat_id: c.tg_group_id }).select().single();
   await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "Принято" });
   if (c.tg_group_id) {
     const q = await tg("sendMessage", { chat_id: c.tg_group_id, parse_mode: "HTML",
@@ -225,6 +227,33 @@ async function onTaskDone(cq: any, id: string) {
   await tg("sendMessage", { chat_id: cq.message.chat.id, text: `✅ ${who}: поручение выполнено — ${t.text}` });
   const { data: c } = await db.from("contracts").select("*").eq("id", t.contract_id).single();
   if (c.boss_tg_id) await tg("sendMessage", { chat_id: c.boss_tg_id, text: `✅ Поручение выполнено (${who}): ${t.text}` });
+}
+
+async function tick() {
+  const now = new Date();
+  const { data: due } = await db.from("tasks").select("*").eq("status", "open").is("reminded_at", null).lt("due_at", now.toISOString());
+  for (const t of due ?? []) {
+    const { data: p } = await db.from("people").select("name").eq("id", t.person_id).maybeSingle();
+    await db.from("tasks").update({ reminded_at: now.toISOString() }).eq("id", t.id);
+    if (t.tg_chat_id) await tg("sendMessage", { chat_id: t.tg_chat_id, parse_mode: "HTML",
+      text: `⏰ <b>${esc(p?.name ?? "Ответственный")}</b>, срок поручения истёк:\n${esc(t.text)}\nНажмите «Сделано» или напишите, что мешает.`,
+      reply_markup: { inline_keyboard: [[{ text: "✅ Сделано", callback_data: `t:${t.id}` }]] } });
+  }
+  const { data: silent } = await db.from("tasks").select("*").eq("status", "open").is("escalated_at", null).not("reminded_at", "is", null);
+  for (const t of silent ?? []) {
+    const { data: c } = await db.from("contracts").select("*").eq("id", t.contract_id).single();
+    const wait = (c.demo_due_minutes ? c.demo_due_minutes : 120) * 60000;
+    if (now.getTime() - new Date(t.reminded_at).getTime() < wait) continue;
+    await db.from("tasks").update({ escalated_at: now.toISOString() }).eq("id", t.id);
+    const { data: p } = await db.from("people").select("name").eq("id", t.person_id).maybeSingle();
+    let risk = "";
+    const { data: d } = await db.from("decisions").select("*").eq("id", t.decision_id).maybeSingle();
+    const o = d?.options?.[d.chosen];
+    if (o) { const { data: wi } = await db.rpc("whatif", { p_contract: c.id, p_code: o.work_code, p_minus: -o.minus_days });
+      if (wi) risk = `\n\nЕсли поручение не выполнено — сдача <b>${fmt(wi.forecast)}</b>, ${statusText(wi)}` + (wi.penalty > 0 ? `, неустойка ≈ <b>${money(wi.penalty)}</b>` : "") + "."; }
+    if (c.boss_tg_id) await tg("sendMessage", { chat_id: c.boss_tg_id, parse_mode: "HTML",
+      text: `🔕 <b>Молчание по поручению</b>\n${esc(p?.name ?? "Ответственный")} не отчитался: ${esc(t.text)}\nСрок был: ${esc(t.due_text ?? "")}, напоминание осталось без ответа.${risk}` });
+  }
 }
 
 async function onPrivate(m: any) {
@@ -252,6 +281,7 @@ Deno.serve(async (req) => {
     const me = await tg("getMe", {});
     return Response.json({ setWebhook: r, bot: me?.result?.username });
   }
+  if (action === "tick") { await tick(); return Response.json({ ok: true }); }
   if (action === "ping") {
     // @ts-ignore EdgeRuntime
     EdgeRuntime.waitUntil((async () => { const a = await gemini('Ответь JSON {"ok": true, "word": "привет"}'); await log("ping", { a, model: goodModel }); })());
