@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Пульс контрактов — панель руководителя</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#F3EFE7;font-family:"Segoe UI",Arial,sans-serif;color:#1C2B3A}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 20px 30px}
+.top{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand{font-size:14px;font-weight:800;letter-spacing:1.4px}
+.sub{font-size:16px;font-weight:600}
+.live{margin-left:auto;font-size:13px;color:#5d6773;display:flex;align-items:center;gap:8px}
+.dot{width:10px;height:10px;border-radius:50%;background:#6DB34A;box-shadow:0 0 0 0 rgba(109,179,74,.5);animation:pl 2s infinite}
+@keyframes pl{0%{box-shadow:0 0 0 0 rgba(109,179,74,.55)}70%{box-shadow:0 0 0 9px rgba(109,179,74,0)}100%{box-shadow:0 0 0 0 rgba(109,179,74,0)}}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-top:16px}
+.tile{background:#fff;border:2px solid #e3ded2;border-radius:16px;padding:12px 14px;min-height:104px;transition:background .4s,border-color .4s}
+.tl{font-size:13px;color:#7a7f86}
+.tv{font-size:28px;font-weight:800;line-height:1.15;margin-top:3px}
+.ts{font-size:13px;font-weight:700;margin-top:2px}
+.bad{background:#FFF5F4;border-color:#E24B4A}
+.warn{background:#FFF8EC;border-color:#EF9F27}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:12px;margin-top:12px}
+.card{background:#fff;border:2px solid #e3ded2;border-radius:16px;padding:12px 14px}
+.ch{font-size:12px;font-weight:800;letter-spacing:.8px;color:#7a7f86;margin-bottom:6px}
+.ev{border-top:1px solid #eee;padding:8px 0;font-size:14px;line-height:1.4}
+.ev:first-of-type{border-top:0}
+.evm{font-size:12px;color:#7a7f86}
+.tag{display:inline-block;font-size:11px;font-weight:800;border-radius:8px;padding:1px 7px;margin-right:4px}
+.t-red{background:#FCEBEB;color:#A32D2D}.t-grn{background:#EAF3DE;color:#3B7D1F}.t-blu{background:#E6F1FB;color:#185fa5}.t-amb{background:#FAEEDA;color:#854f0b}
+.empty{font-size:14px;color:#9aa3ad;padding:8px 0}
+.err{background:#FFF5F4;border:2px solid #E24B4A;border-radius:14px;padding:16px;margin-top:16px;font-size:16px}
+@media (max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <div class="top">
+  <svg width="34" height="34" viewBox="0 0 46 46"><circle cx="23" cy="23" r="20" fill="#fff" stroke="#1C2B3A" stroke-width="3"/><line x1="23" y1="23" x2="23" y2="12" stroke="#1C2B3A" stroke-width="3" stroke-linecap="round"/><line x1="23" y1="23" x2="32" y2="28" stroke="#D85A30" stroke-width="3" stroke-linecap="round"/><circle cx="23" cy="23" r="2.6" fill="#D85A30"/></svg>
+  <div><div class="brand">ПУЛЬС КОНТРАКТОВ</div><div class="sub" id="title">Загрузка…</div></div>
+  <div class="live"><span class="dot" id="dot"></span><span id="upd">подключение…</span></div>
+ </div>
+ <div id="err"></div>
+
+ <div class="grid">
+  <div class="tile" id="tF"><div class="tl">Прогноз сдачи</div><div class="tv" id="fc">—</div><div class="ts" id="fcs"></div><svg id="pulse" width="100%" height="34" viewBox="0 0 200 34" preserveAspectRatio="none" style="margin-top:4px"></svg></div>
+  <div class="tile"><div class="tl">Срок по договору</div><div class="tv" id="dl">—</div><div class="ts" id="today" style="color:#7a7f86"></div></div>
+  <div class="tile" id="tP"><div class="tl">Риск неустойки</div><div class="tv" id="pen">—</div><div class="ts" id="pens" style="color:#7a7f86"></div></div>
+  <div class="tile"><div class="tl">Работы</div><div class="tv" id="wk">—</div><div class="ts" id="wks" style="color:#7a7f86"></div></div>
+ </div>
+
+ <div class="row">
+  <div class="card"><div class="ch">СЕТЬ РАБОТ · ЖИВОЙ ГРАФИК</div><svg id="g" width="100%" viewBox="0 0 820 440"></svg>
+   <div style="font-size:12.5px;color:#7a7f86">Синий пунктир — сегодня · чёрная линия — срок по договору · красное — сдвинулось против плана</div></div>
+  <div>
+   <div class="card"><div class="ch">СОБЫТИЯ</div><div id="evs"><div class="empty">Пока событий нет</div></div></div>
+   <div class="card" style="margin-top:12px"><div class="ch">ПОРУЧЕНИЯ</div><div id="tasks"><div class="empty">Открытых поручений нет</div></div></div>
+  </div>
+ </div>
+</div>
+<script>
+var SB_URL='https://tpzrcuykixxrqncowfoc.supabase.co';
+var SB_KEY='sb_publishable_3u8svWHEJnDnKURgd4yAGg_CPs0cdTy';
+var KEY=(location.search.match(/[?&]k=([^&]+)/)||[])[1]||'';
+var MON=['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
+function D(s){var p=s.split('-');return new Date(+p[0],+p[1]-1,+p[2])}
+function fmt(s){var d=D(s);return d.getDate()+' '+MON[d.getMonth()]}
+function days(a,b){return Math.round((D(b)-D(a))/864e5)}
+function money(v){return Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g,' ')+' ₸'}
+function plural(n,a,b,c){n=Math.abs(n);var m=n%10,h=n%100;return (m==1&&h!=11)?a:(m>=2&&m<=4&&(h<10||h>=20))?b:c}
+function el(t,a,txt){var e=document.createElementNS('http://www.w3.org/2000/svg',t);for(var k in a)e.setAttribute(k,a[k]);if(txt!=null)e.textContent=txt;return e}
+function esc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;'}[c]})}
+
+function render(d){
+ var c=d.contract,f=d.forecast||{};
+ document.getElementById('title').textContent=c.title+' · '+(Math.round(c.amount/1e5)/10).toString().replace('.',',')+' млн ₸';
+ document.getElementById('dl').textContent=fmt(c.deadline);
+ document.getElementById('today').textContent='сегодня '+fmt(c.today);
+ var slack=f.slack_days, late=slack<0;
+ document.getElementById('fc').textContent=f.forecast_date?fmt(f.forecast_date):'—';
+ var fcs=document.getElementById('fcs');
+ fcs.textContent=late?('опоздание '+(-slack)+' '+plural(slack,'день','дня','дней')):(slack==0?'впритык, без запаса':'в срок · запас '+slack+' '+plural(slack,'день','дня','дней'));
+ var col=late?'#C73534':(slack==0?'#B5650D':'#3B7D1F');
+ document.getElementById('fc').style.color=col;fcs.style.color=col;
+ document.getElementById('tF').className='tile'+(late?' bad':(slack==0?' warn':''));
+ var pen=+f.penalty||0;
+ document.getElementById('pen').textContent=pen?('≈ '+money(pen)):'0 ₸';
+ document.getElementById('pen').style.color=pen?'#C73534':'#1C2B3A';
+ document.getElementById('pens').textContent=pen?'0,1% в день от суммы':'по текущему плану — в срок';
+ document.getElementById('tP').className='tile'+(pen?' bad':'');
+ var w=d.works||[],dn=0,wk=0,pl=0;w.forEach(function(x){if(x.status=='done')dn++;else if(x.status=='work')wk++;else pl++});
+ document.getElementById('wk').textContent=dn+' из '+w.length;
+ document.getElementById('wks').textContent='сделано · в работе '+wk+' · впереди '+pl;
+ pulse(d.history||[],c.deadline);
+ graph(d);
+ var ev=d.events||[],h='';
+ ev.slice(0,8).forEach(function(e){var t=e.status=='confirmed'?'<span class="tag t-red">учтено</span>':(e.status=='asked'?'<span class="tag t-amb">уточняется</span>':'<span class="tag t-blu">новое</span>');
+  var dt=new Date(e.created_at);h+='<div class="ev">'+t+esc(e.summary||e.raw_text)+'<div class="evm">'+esc(e.author||e.source)+' · '+dt.getDate()+' '+MON[dt.getMonth()]+' '+('0'+dt.getHours()).slice(-2)+':'+('0'+dt.getMinutes()).slice(-2)+(e.delay_days?' · +'+e.delay_days+' '+plural(e.delay_days,'день','дня','дней'):'')+'</div></div>'});
+ document.getElementById('evs').innerHTML=h||'<div class="empty">Пока событий нет — система ждёт сообщений</div>';
+ var ts=(d.tasks||[]).filter(function(t){return t.status=='open'}),th='';
+ ts.slice(0,8).forEach(function(t){th+='<div class="ev"><b>'+esc(t.who||'')+'</b> — '+esc(t.text)+'<div class="evm">'+esc(t.due||'')+'</div></div>'});
+ document.getElementById('tasks').innerHTML=th||'<div class="empty">Открытых поручений нет</div>';
+}
+
+function pulse(hist,dl){
+ var s=document.getElementById('pulse');while(s.firstChild)s.removeChild(s.firstChild);
+ if(!hist.length)return;
+ var vals=hist.map(function(x){return x.slack});if(vals.length==1)vals=[vals[0],vals[0]];
+ var mx=Math.max(3,Math.max.apply(null,vals)),mn=Math.min(-3,Math.min.apply(null,vals));
+ var y=function(v){return 4+(mx-v)/(mx-mn)*26};
+ s.appendChild(el('line',{x1:0,x2:200,y1:y(0),y2:y(0),stroke:'#e3ded2','stroke-dasharray':'3 3'}));
+ var pts=vals.map(function(v,i){return (i/(vals.length-1)*196+2)+','+y(v)}).join(' ');
+ var last=vals[vals.length-1];
+ s.appendChild(el('polyline',{points:pts,fill:'none',stroke:last<0?'#E24B4A':'#6DB34A','stroke-width':2.5,'stroke-linejoin':'round'}));
+}
+
+function graph(d){
+ var g=document.getElementById('g');while(g.firstChild)g.removeChild(g.firstChild);
+ var w=d.works||[];if(!w.length)return;
+ var c=d.contract,start=c.start,end=[c.deadline];w.forEach(function(x){end.push(x.calc_end)});end.sort();
+ var span=Math.max(days(start,end[end.length-1])+4,days(start,c.deadline)+6);
+ var X0=110,X1=810,px=function(s){return X0+(X1-X0)*days(start,s)/span};
+ var secs=[];w.forEach(function(x){if(secs.indexOf(x.section)<0)secs.push(x.section)});
+ var RY=function(s){return 16+secs.indexOf(s)*62},BH=26;
+ secs.forEach(function(s){g.appendChild(el('text',{x:6,y:RY(s)+18,'font-size':14,'font-weight':700,fill:'#1C2B3A'},s))});
+ var byId={};w.forEach(function(x){byId[x.id]=x});
+ (d.deps||[]).forEach(function(r){var a=byId[r.a],b=byId[r.b];if(!a||!b)return;
+  var x1=px(a.calc_end),y1=RY(a.section)+BH/2,x2=px(b.calc_start),y2=RY(b.section)+BH/2;
+  var late=days(b.base_start,b.calc_start)>0||b.extra>0;
+  g.appendChild(el('path',{d:'M'+x1+','+y1+' C'+(x1+14)+','+y1+' '+(x2-14)+','+y2+' '+x2+','+y2,fill:'none',stroke:late&&b.status!='done'?'#E24B4A':'#cfc8ba','stroke-width':late?2:1.4}))});
+ w.forEach(function(x){var late=(days(x.base_start,x.calc_start)>0||x.extra>0)&&x.status!='done';
+  var cl=x.status=='done'?['#EAF3DE','#6DB34A']:x.status=='work'?['#E6F1FB','#378ADD']:['#F1EFE8','#cfc8ba'];if(late)cl=['#FCEBEB','#E24B4A'];
+  var X=px(x.calc_start),W=Math.max(14,px(x.calc_end)-X);
+  g.appendChild(el('rect',{x:X,y:RY(x.section),width:W,height:BH,rx:7,fill:cl[0],stroke:cl[1],'stroke-width':late?2.2:1.5}));
+  g.appendChild(el('text',{x:X+W/2,y:RY(x.section)+17,'font-size':10.5,fill:'#5d6773','text-anchor':'middle'},{'фрезерование':'фрез.','колодцы':'колодцы','асфальт':'асфальт'}[x.kind]||x.kind))});
+ var H=RY(secs[secs.length-1])+BH+10;
+ g.appendChild(el('line',{x1:px(c.deadline),x2:px(c.deadline),y1:4,y2:H,stroke:'#1C2B3A','stroke-width':2.5}));
+ g.appendChild(el('text',{x:px(c.deadline),y:H+16,'font-size':12,'font-weight':800,fill:'#1C2B3A','text-anchor':'middle'},'срок '+fmt(c.deadline)));
+ g.appendChild(el('line',{x1:px(c.today),x2:px(c.today),y1:4,y2:H,stroke:'#185fa5','stroke-width':2,'stroke-dasharray':'5 4'}));
+ g.appendChild(el('text',{x:px(c.today),y:H+16,'font-size':12,'font-weight':700,fill:'#185fa5','text-anchor':'middle'},'сегодня'));
+ var f=d.forecast;if(f){var lt=f.slack_days<0;g.appendChild(el('text',{x:px(f.forecast_date),y:H+32,'font-size':12,'font-weight':800,fill:lt?'#C73534':'#3B7D1F','text-anchor':'middle'},'⚑ прогноз '+fmt(f.forecast_date)))}
+ g.setAttribute('viewBox','0 0 820 '+(H+40));
+}
+
+function load(){
+ if(!KEY){document.getElementById('err').innerHTML='<div class="err">В ссылке нет ключа контракта. Откройте панель по полной ссылке, которую прислал Пульс.</div>';return}
+ var x=new XMLHttpRequest();x.open('POST',SB_URL+'/rest/v1/rpc/dashboard');
+ x.setRequestHeader('apikey',SB_KEY);x.setRequestHeader('Content-Type','application/json');
+ x.onload=function(){try{var d=JSON.parse(x.responseText);if(!d||!d.contract){document.getElementById('err').innerHTML='<div class="err">Контракт по этой ссылке не найден.</div>';return}
+  document.getElementById('err').innerHTML='';render(d);var n=new Date();document.getElementById('upd').textContent='данные живые · обновлено в '+('0'+n.getHours()).slice(-2)+':'+('0'+n.getMinutes()).slice(-2)+':'+('0'+n.getSeconds()).slice(-2)}catch(e){document.getElementById('upd').textContent='ошибка данных'}};
+ x.onerror=function(){document.getElementById('upd').textContent='нет связи — повторю через 15 секунд'};
+ x.send(JSON.stringify({p_key:KEY}));
+}
+load();setInterval(load,15000);
+</script>
+</body>
+</html>
